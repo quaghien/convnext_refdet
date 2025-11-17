@@ -1088,7 +1088,7 @@ def train(config):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=config['epochs'],
-        eta_min=config['lr'] * 0.01
+        eta_min=config['lr'] * 0.1
     )
     
     # Load checkpoint if specified (only model weights, optimizer/scheduler always fresh)
@@ -1207,7 +1207,7 @@ if __name__ == "__main__":
         # Training
         'batch_size': 4,
         'epochs': 70,
-        'lr': 1e-4,
+        'lr': 5e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
         'num_workers': 2,
