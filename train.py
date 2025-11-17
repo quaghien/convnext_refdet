@@ -560,11 +560,10 @@ class ReferenceDetectionDataset(Dataset):
             # Search transform: Strong augmentation for robustness
             self.search_transform = A.Compose([
                 # 1. Shift + Scale jitter (most critical for tracking)
-                A.ShiftScaleRotate(
-                    shift_limit=0.10,      # ±10% image shift
-                    scale_limit=0.20,      # ±20% scale jitter (SiamRPN++ standard)
-                    rotate_limit=0,        # No rotation (tracking doesn't need it)
-                    border_mode=0,         # Constant black padding
+                A.Affine(
+                    translate_percent={'x': (-0.10, 0.10), 'y': (-0.10, 0.10)},  # ±10% image shift
+                    scale=(0.8, 1.2),      # ±20% scale jitter (SiamRPN++ standard)
+                    rotate=0,              # No rotation (tracking doesn't need it)
                     p=0.7,
                 ),
                 
@@ -582,8 +581,6 @@ class ReferenceDetectionDataset(Dataset):
                     A.GaussianBlur(blur_limit=(3, 5)),   # Out-of-focus
                     A.MotionBlur(blur_limit=5),          # Camera/object motion
                 ], p=0.3),
-                
-                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),  # Sensor noise
                 
                 # 4. Compression artifacts (real camera compression)
                 A.ImageCompression(quality_range=(60, 100), p=0.2),
@@ -1186,7 +1183,8 @@ if __name__ == "__main__":
     # Training configuration
     config = {
         # Data
-        'data_root': '/home/ta-thai-24/Workspace/hienhq/refdet/retrieval_dataset_flat_zoomed',
+        'data_root': 'refdet/retrieval_dataset_flat_zoomed',
+        # 'data_root': '/home/ta-thai-24/Workspace/hienhq/refdet/retrieval_dataset_flat_zoomed',
         'search_size': (1024, 576),
         'template_size': (256, 256),
         
@@ -1210,12 +1208,13 @@ if __name__ == "__main__":
         'lr': 5e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
-        'num_workers': 2,
+        'num_workers': 4,
         
         # Logging
         'use_wandb': False,
         'project_name': 'convnext-refdet',
-        'checkpoint_dir': './checkpoints',
+        'checkpoint_dir': 'drive/MyDrive/ZALO2025',
+        # 'checkpoint_dir': 'checkpoints_refdet',
         'save_interval': 5,
         
         # Checkpoint
