@@ -297,16 +297,23 @@ def main():
     # Configuration
     CHECKPOINT_PATH = "drive/MyDrive/ZALO2025/best_weights_fp32.pth"
     SAMPLES_DIR = "public_test/samples"
+    OUTPUT_DIR = "drive/MyDrive/ZALO2025"
     
     # Generate output filename with timestamp
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    OUTPUT_PATH = f"submission_output_{timestamp}.json"
+    OUTPUT_PATH = f"{OUTPUT_DIR}/submission_output_{timestamp}.json"
     
     CONFIDENCE_THRESHOLD = 0.4
     USE_FP16 = False 
     
     print("=== Single-Frame GPU Inference ===")
+    
+    # Check output directory exists
+    if not os.path.exists(OUTPUT_DIR):
+        raise FileNotFoundError(f"Output directory not found: {OUTPUT_DIR}")
+    print(f"✓ Output dir: {OUTPUT_DIR}")
+    
     print(f"Checkpoint: {CHECKPOINT_PATH}")
     print(f"Samples: {SAMPLES_DIR}")
     print(f"Confidence: {CONFIDENCE_THRESHOLD}")
