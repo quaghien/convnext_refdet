@@ -208,12 +208,13 @@ def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_
     return weights_path, best_path
 
 
-def find_latest_checkpoint(checkpoint_dir):
+def find_latest_checkpoint(checkpoint_dir, use_fp16=False):
     """
     Find the latest checkpoint in the directory.
     
     Args:
         checkpoint_dir: directory to search
+        use_fp16: if True, look for FP16 checkpoint, otherwise FP32
     
     Returns:
         str or None: path to latest checkpoint
@@ -222,8 +223,10 @@ def find_latest_checkpoint(checkpoint_dir):
     if not checkpoint_dir.exists():
         return None
     
-    # Look for last_Ne.pth files
-    last_checkpoints = list(checkpoint_dir.glob('last_*e.pth'))
+    # Look for last_Ne_fp32.pth or last_Ne_fp16.pth files
+    suffix = '_fp16.pth' if use_fp16 else '_fp32.pth'
+    pattern = f'last_*e{suffix}'
+    last_checkpoints = list(checkpoint_dir.glob(pattern))
     if not last_checkpoints:
         return None
     
@@ -232,7 +235,7 @@ def find_latest_checkpoint(checkpoint_dir):
     latest_checkpoint = None
     
     for ckpt_path in last_checkpoints:
-        # Extract epoch number from filename like 'last_15e.pth'
+        # Extract epoch number from filename like 'last_15e_fp32.pth'
         try:
             epoch_str = ckpt_path.stem.split('_')[1].rstrip('e')
             epoch_num = int(epoch_str)
@@ -376,6 +379,11 @@ class IoULoss(nn.Module):
         Note: Uses offset coordinates (cx_offset, cy_offset) instead of absolute (cx, cy).
         IoU is translation invariant, so this works correctly.
         """
+        # Always compute loss in FP32 to avoid overflow/underflow
+        dtype_orig = pred_boxes.dtype
+        pred_boxes = pred_boxes.float()
+        target_boxes = target_boxes.float()
+        
         # Convert to (x1, y1, x2, y2) format
         pred_x1 = pred_boxes[:, 0] - pred_boxes[:, 2] / 2
         pred_y1 = pred_boxes[:, 1] - pred_boxes[:, 3] / 2
@@ -464,11 +472,13 @@ class IoULoss(nn.Module):
             raise ValueError(f"Unknown loss_type: {self.loss_type}")
         
         if self.reduction == 'mean':
-            return loss.mean()
+            loss = loss.mean()
         elif self.reduction == 'sum':
-            return loss.sum()
+            loss = loss.sum()
         else:
-            return loss
+            pass  # no reduction
+        
+        return loss.to(dtype_orig)
 
 
 class RefDetLoss(nn.Module):
@@ -583,6 +593,10 @@ class RefDetLoss(nn.Module):
             if len(pred_bboxes) > 0:
                 pred_bboxes = torch.cat(pred_bboxes, dim=0)  # [total_pos, 4]
                 target_bboxes = torch.cat(target_bboxes, dim=0)  # [total_pos, 4]
+                
+                # Cast to FP32 before decoding to avoid overflow in softplus/exp
+                pred_bboxes = pred_bboxes.float()
+                target_bboxes = target_bboxes.float()
                 
                 # Decode predictions from logit space (tx, ty, tw, th) to pixel space
                 # Using model's decode_bbox_logits helper for consistency
@@ -931,11 +945,12 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
         
         optimizer.zero_grad()
         
-        # Forward with mixed precision
+        # Forward with mixed precision (model only, loss stays in FP32)
         if scaler is not None:
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 obj_map, bbox_map = model(templates, search)
-                loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
+            # Compute loss outside autocast to ensure FP32 computation
+            loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
         else:
             obj_map, bbox_map = model(templates, search)
             loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
@@ -1032,10 +1047,12 @@ def validate(model, dataloader, criterion, device, config):
             search = batch['search'].to(device)
             targets = batch['targets']
             
-            # Forward with mixed precision (faster validation, no scaler needed)
+            # Forward with mixed precision (model only, loss in FP32)
             with torch.amp.autocast('cuda', dtype=torch.float16, enabled=(device.type == 'cuda')):
                 obj_map, bbox_map = model(templates, search)
-                loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
+            
+            # Compute loss outside autocast to ensure FP32 computation
+            loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
             
             # Compute IoU metrics
             B, _, H, W = obj_map.shape
@@ -1236,10 +1253,12 @@ def train(config):
     if checkpoint_path:
         try:
             checkpoint_info = load_checkpoint(checkpoint_path, model)
+            # Ensure model is in FP32 for training (handles both FP16/FP32 checkpoints)
+            model = model.float().to(device)
             if 'val_stats' in checkpoint_info and 'loss' in checkpoint_info['val_stats']:
                 best_val_loss = checkpoint_info['val_stats']['loss']
                 print(f"Previous best val loss: {best_val_loss:.4f}")
-            print("Model weights loaded, optimizer/scheduler will be fresh")
+            print("Model weights loaded and converted to FP32 for training")
         except Exception as e:
             print(f"Failed to load checkpoint: {e}")
             print("Starting training from scratch")
@@ -1335,7 +1354,7 @@ if __name__ == "__main__":
         
         # Training
         'batch_size': 16,
-        'epochs': 20,
+        'epochs': 10,
         'lr': 2e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
@@ -1351,7 +1370,7 @@ if __name__ == "__main__":
         'save_fp32_backup': True,  # Save both FP16 (for inference) and FP32 (for fine-tuning) checkpoints
         
         # Checkpoint
-        'checkpoint_path': 'drive/MyDrive/ZALO2025/best_weights.pth',  # path to checkpoint to load, or None for training from scratch
+        'checkpoint_path': 'drive/MyDrive/ZALO2025/best_weights_fp32.pth',  # path to checkpoint to load, or None for training from scratch
     }
     
     train(config)
