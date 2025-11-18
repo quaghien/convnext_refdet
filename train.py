@@ -1347,7 +1347,6 @@ if __name__ == "__main__":
         'use_wandb': False,
         'project_name': 'convnext-refdet',
         'checkpoint_dir': 'drive/MyDrive/ZALO2025',
-        # 'checkpoint_dir': 'checkpoints_refdet',
         'save_interval': 5,
         'save_fp32_backup': True,  # Save both FP16 (for inference) and FP32 (for fine-tuning) checkpoints
         
