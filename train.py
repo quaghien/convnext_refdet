@@ -1216,7 +1216,7 @@ if __name__ == "__main__":
         # Training
         'batch_size': 16,
         'epochs': 40,
-        'lr': 3e-5,
+        'lr': 1e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
         'num_workers': 8,
