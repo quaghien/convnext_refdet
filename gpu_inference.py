@@ -155,11 +155,11 @@ class SingleFrameGPUInference:
             # Decode predictions
             predictions = self.model.decode_predictions(
                 obj_map, bbox_map,
-                score_threshold=0.05,
+                score_threshold=0.01,
                 top_k=5
             )[0]  # Get first (only) batch item
         
-        # Find best detection
+        # Find best detection above threshold
         best_det = None
         best_score = 0.0
         
