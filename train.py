@@ -1216,7 +1216,7 @@ if __name__ == "__main__":
         # Training
         'batch_size': 4,
         'epochs': 70,
-        'lr': 5e-5,
+        'lr': 2e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
         'num_workers': 4,
@@ -1225,7 +1225,7 @@ if __name__ == "__main__":
         # Logging
         'use_wandb': False,
         'project_name': 'convnext-refdet',
-        'checkpoint_dir': 'drive/MyDrive/ZALO2025',
+        'checkpoint_dir': 'drive/MyDrive/ZALO2025/best.pth',
         # 'checkpoint_dir': 'checkpoints_refdet',
         'save_interval': 5,
         
