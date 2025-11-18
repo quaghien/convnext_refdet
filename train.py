@@ -52,8 +52,25 @@ def load_checkpoint(checkpoint_path, model):
     print(f"Loading model weights from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
-    # Load only model weights
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # Detect checkpoint precision by checking first parameter
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        # Handle weights-only checkpoints
+        state_dict = checkpoint
+    
+    # Get first parameter to check precision
+    first_param_key = next(iter(state_dict))
+    first_param = state_dict[first_param_key]
+    checkpoint_precision = "FP16" if first_param.dtype == torch.float16 else "FP32"
+    print(f"Checkpoint precision: {checkpoint_precision}")
+    
+    # Load weights (PyTorch handles precision conversion automatically)
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        # Handle weights-only checkpoints
+        model.load_state_dict(checkpoint)
     
     info = {
         'epoch': checkpoint.get('epoch', 0),
@@ -99,8 +116,13 @@ def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_
             weights_path.unlink()
             print(f"Removed existing weights: {weights_path}")
         
-        torch.save(model.state_dict(), weights_path)
-        print(f"Saved weights: {weights_path}")
+        # Convert to FP16 before saving for optimized inference
+        model_fp16 = model.half()
+        torch.save(model_fp16.state_dict(), weights_path)
+        print(f"Saved FP16 weights: {weights_path}")
+        
+        # Convert back to original precision for continued training
+        model = model.float()
         
         # Clean up previous checkpoint (epoch - save_interval)
         if epoch > save_interval:
@@ -119,8 +141,13 @@ def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_
             best_path.unlink()
             print(f"Removed existing best weights: {best_path}")
         
-        torch.save(model.state_dict(), best_path)
-        print(f"Saved best weights: {best_path}")
+        # Convert to FP16 before saving for optimized inference
+        model_fp16 = model.half()
+        torch.save(model_fp16.state_dict(), best_path)
+        print(f"Saved best FP16 weights: {best_path}")
+        
+        # Convert back to original precision for continued training
+        model = model.float()
     
     return weights_path, best_path
 
@@ -859,12 +886,16 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
         
         # Check for NaN/inf loss (FP16 safety guard)
         if not torch.isfinite(loss):
+            # Use safe values for logging to avoid -inf display
+            safe_loss = float(torch.nan_to_num(loss.detach().float(), nan=0.0, posinf=1e4, neginf=-1e4).item())
+            safe_loss_obj = float(torch.nan_to_num(torch.tensor(loss_dict['loss_obj']), nan=0.0, posinf=1e4, neginf=-1e4).item())
+            safe_loss_bbox = float(torch.nan_to_num(torch.tensor(loss_dict['loss_bbox']), nan=0.0, posinf=1e4, neginf=-1e4).item())
+            
             print(f"[WARN] Non-finite loss at epoch {epoch}, batch {batch_idx}: "
-                  f"loss={loss.item():.4f}, obj={loss_dict['loss_obj']:.4f}, "
-                  f"bbox={loss_dict['loss_bbox']:.4f}, num_pos={loss_dict['num_pos']}")
+                  f"loss={safe_loss:.4f}, obj={safe_loss_obj:.4f}, "
+                  f"bbox={safe_loss_bbox:.4f}, num_pos={loss_dict['num_pos']}")
             optimizer.zero_grad(set_to_none=True)
-            if scaler is not None:
-                scaler.update()  # Skip this step
+            # Do NOT call scaler.update() here - no inf checks were recorded
             continue
         
         # Backward with mixed precision

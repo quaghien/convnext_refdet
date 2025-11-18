@@ -282,8 +282,8 @@ def main():
     CHECKPOINT_PATH = "drive/MyDrive/ZALO2025/best.pth"
     SAMPLES_DIR = "public_test/samples"
     OUTPUT_PATH = "submission_output.json"
-    CONFIDENCE_THRESHOLD = 0.4
-    USE_FP16 = False  # Set to False for FP32
+    CONFIDENCE_THRESHOLD = 0.7
+    USE_FP16 = True 
     
     print("=== Single-Frame GPU Inference ===")
     print(f"Checkpoint: {CHECKPOINT_PATH}")
