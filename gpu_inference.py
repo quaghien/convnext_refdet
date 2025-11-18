@@ -38,8 +38,23 @@ class SingleFrameGPUInference:
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
+        # Handle both full checkpoints and weights-only files
+        if 'model_state_dict' in checkpoint:
+            # Full checkpoint format
+            state_dict = checkpoint['model_state_dict']
+            config = checkpoint.get('config', {})
+        else:
+            # Weights-only format
+            state_dict = checkpoint
+            config = {}  # Use default config
+        
+        # Detect checkpoint precision
+        first_param_key = next(iter(state_dict))
+        first_param = state_dict[first_param_key]
+        checkpoint_precision = "FP16" if first_param.dtype == torch.float16 else "FP32"
+        print(f"Checkpoint precision: {checkpoint_precision}")
+        
         # Build model
-        config = checkpoint.get('config', {})
         self.model = build_convnext_refdet(
             fpn_channels=config.get('fpn_channels', 256),
             corr_channels=config.get('corr_channels', 64),
@@ -47,7 +62,8 @@ class SingleFrameGPUInference:
             template_fusion=config.get('template_fusion', 'attention')
         )
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        # Load weights
+        self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device)
         
         # Convert to FP16 if enabled

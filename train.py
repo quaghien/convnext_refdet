@@ -117,12 +117,12 @@ def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_
             print(f"Removed existing weights: {weights_path}")
         
         # Convert to FP16 before saving for optimized inference
-        model_fp16 = model.half()
-        torch.save(model_fp16.state_dict(), weights_path)
+        model.half()
+        torch.save(model.state_dict(), weights_path)
         print(f"Saved FP16 weights: {weights_path}")
         
         # Convert back to original precision for continued training
-        model = model.float()
+        model.float()
         
         # Clean up previous checkpoint (epoch - save_interval)
         if epoch > save_interval:
@@ -142,12 +142,12 @@ def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_
             print(f"Removed existing best weights: {best_path}")
         
         # Convert to FP16 before saving for optimized inference
-        model_fp16 = model.half()
-        torch.save(model_fp16.state_dict(), best_path)
+        model.half()
+        torch.save(model.state_dict(), best_path)
         print(f"Saved best FP16 weights: {best_path}")
         
         # Convert back to original precision for continued training
-        model = model.float()
+        model.float()
     
     return weights_path, best_path
 
