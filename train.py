@@ -822,7 +822,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
         
         # Forward with mixed precision
         if scaler is not None:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
+            with torch.amp.autocast('cuda', dtype=torch.float16):
                 obj_map, bbox_map = model(templates, search)
                 loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
         else:
@@ -908,7 +908,7 @@ def validate(model, dataloader, criterion, device, config):
             targets = batch['targets']
             
             # Forward with mixed precision (faster validation, no scaler needed)
-            with torch.cuda.amp.autocast(dtype=torch.float16, enabled=(device.type == 'cuda')):
+            with torch.amp.autocast('cuda', dtype=torch.float16, enabled=(device.type == 'cuda')):
                 obj_map, bbox_map = model(templates, search)
                 loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
             
@@ -1094,7 +1094,7 @@ def train(config):
     
     # Initialize mixed precision scaler
     use_amp = config.get('use_amp', True) and device.type == 'cuda'
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp) if use_amp else None
     
     if use_amp:
         print("Using mixed precision (FP16) training")
@@ -1214,12 +1214,12 @@ if __name__ == "__main__":
         'pos_radius': 1,  # Multi-cell positive: 0=single cell, 1=3x3 patch, 2=5x5 patch
         
         # Training
-        'batch_size': 4,
-        'epochs': 70,
-        'lr': 2e-5,
+        'batch_size': 16,
+        'epochs': 40,
+        'lr': 3e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
-        'num_workers': 4,
+        'num_workers': 8,
         'use_amp': True,  # Enable mixed precision (FP16) training for speed + memory efficiency
         
         # Logging
