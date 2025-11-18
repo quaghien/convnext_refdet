@@ -38,32 +38,22 @@ from model import build_convnext_refdet
 # Checkpoint Management
 # ============================================================================
 
-def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None):
+def load_checkpoint(checkpoint_path, model):
     """
-    Load checkpoint and resume training state.
+    Load model weights from checkpoint.
     
     Args:
         checkpoint_path: path to checkpoint file
         model: model to load state into
-        optimizer: optimizer to load state into (optional)
-        scheduler: scheduler to load state into (optional)
     
     Returns:
         dict: checkpoint info (epoch, stats, config)
     """
-    print(f"Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    print(f"Loading model weights from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
-    # Load model state
+    # Load only model weights
     model.load_state_dict(checkpoint['model_state_dict'])
-    
-    # Load optimizer state if provided
-    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
-    # Load scheduler state if provided
-    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     info = {
         'epoch': checkpoint.get('epoch', 0),
@@ -72,7 +62,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None):
         'config': checkpoint.get('config', {})
     }
     
-    print(f"Resumed from epoch {info['epoch']}")
+    print(f"Loaded weights from epoch {info['epoch']}")
     if 'val_stats' in checkpoint and 'loss' in checkpoint['val_stats']:
         print(f"Previous val loss: {checkpoint['val_stats']['loss']:.4f}")
     
@@ -811,8 +801,8 @@ def collate_fn(batch):
 # Training
 # ============================================================================
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, config):
-    """Train for one epoch."""
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, config, scaler=None):
+    """Train for one epoch with optional mixed precision."""
     model.train()
     
     total_loss = 0
@@ -828,21 +818,36 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
         search = batch['search'].to(device)
         targets = batch['targets']
         
-        # Forward
-        obj_map, bbox_map = model(templates, search)
-        
-        # Compute loss
-        loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
-        
-        # Backward
         optimizer.zero_grad()
-        loss.backward()
         
-        # Gradient clipping
-        if config.get('grad_clip', 0) > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config['grad_clip'])
+        # Forward with mixed precision
+        if scaler is not None:
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                obj_map, bbox_map = model(templates, search)
+                loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
+        else:
+            obj_map, bbox_map = model(templates, search)
+            loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
         
-        optimizer.step()
+        # Backward with mixed precision
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            
+            # Gradient clipping with scaler
+            if config.get('grad_clip', 0) > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['grad_clip'])
+            
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            
+            # Gradient clipping
+            if config.get('grad_clip', 0) > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['grad_clip'])
+            
+            optimizer.step()
         
         # Update stats
         batch_size = search.size(0)
@@ -881,7 +886,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
 
 
 def validate(model, dataloader, criterion, device, config):
-    """Validate the model."""
+    """Validate the model with mixed precision."""
     model.eval()
     
     total_loss = 0
@@ -902,11 +907,10 @@ def validate(model, dataloader, criterion, device, config):
             search = batch['search'].to(device)
             targets = batch['targets']
             
-            # Forward
-            obj_map, bbox_map = model(templates, search)
-            
-            # Compute loss
-            loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
+            # Forward with mixed precision (faster validation, no scaler needed)
+            with torch.cuda.amp.autocast(dtype=torch.float16, enabled=(device.type == 'cuda')):
+                obj_map, bbox_map = model(templates, search)
+                loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
             
             # Compute IoU metrics
             B, _, H, W = obj_map.shape
@@ -1088,17 +1092,26 @@ def train(config):
         eta_min=config['lr'] * 0.1
     )
     
-    # Load checkpoint if specified (only model weights, optimizer/scheduler always fresh)
+    # Initialize mixed precision scaler
+    use_amp = config.get('use_amp', True) and device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
+    
+    if use_amp:
+        print("Using mixed precision (FP16) training")
+    else:
+        print("Using FP32 training")
+    
+    # Load checkpoint if specified (backward compatible with FP32 checkpoints)
     start_epoch = 1
     best_val_loss = float('inf')
     
     if checkpoint_path:
         try:
-            checkpoint_info = load_checkpoint(checkpoint_path, model)  # Only load model
+            checkpoint_info = load_checkpoint(checkpoint_path, model)
             if 'val_stats' in checkpoint_info and 'loss' in checkpoint_info['val_stats']:
                 best_val_loss = checkpoint_info['val_stats']['loss']
-                print(f"Loaded previous best val loss: {best_val_loss:.4f}")
-            print("Model weights loaded, optimizer/scheduler initialized fresh")
+                print(f"Previous best val loss: {best_val_loss:.4f}")
+            print("Model weights loaded, optimizer/scheduler will be fresh")
         except Exception as e:
             print(f"Failed to load checkpoint: {e}")
             print("Starting training from scratch")
@@ -1110,7 +1123,7 @@ def train(config):
         
         # Train
         train_stats = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, config
+            model, train_loader, criterion, optimizer, device, epoch, config, scaler=scaler
         )
         
         print(f"Train - Loss: {train_stats['loss']:.4f}, "
@@ -1152,8 +1165,6 @@ def train(config):
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
             'train_stats': train_stats,
             'val_stats': val_stats,
             'config': config,
@@ -1209,6 +1220,7 @@ if __name__ == "__main__":
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
         'num_workers': 4,
+        'use_amp': True,  # Enable mixed precision (FP16) training for speed + memory efficiency
         
         # Logging
         'use_wandb': False,

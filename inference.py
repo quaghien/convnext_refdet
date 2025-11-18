@@ -44,7 +44,7 @@ class RefDetInference:
         
         # Load model
         print(f"Loading model from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         # Build model
         config = checkpoint.get('config', {})
