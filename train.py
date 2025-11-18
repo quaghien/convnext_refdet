@@ -1029,12 +1029,15 @@ def train(config):
     
     # Build dataset
     print("Building datasets...")
+    use_aug = config.get('use_augmentation', True)
+    print(f"Data augmentation: {'ENABLED' if use_aug else 'DISABLED'}")
+    
     train_dataset = ReferenceDetectionDataset(
         data_root=config['data_root'],
         split='train',
         search_size=config['search_size'],
         template_size=config['template_size'],
-        augmentation=True
+        augmentation=use_aug
     )
     
     # Debug pixel bbox
@@ -1221,6 +1224,7 @@ if __name__ == "__main__":
         'grad_clip': 1.0,
         'num_workers': 8,
         'use_amp': True,  # Enable mixed precision (FP16) training for speed + memory efficiency
+        'use_augmentation': True,  # Enable/disable data augmentation (True=augment, False=no augment)
         
         # Logging
         'use_wandb': False,
