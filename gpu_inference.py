@@ -117,68 +117,80 @@ class OptimizedInference:
         return all_detections
     
     def process_batch_silent(self, frame_paths, frame_indices, templates):
-        """Process batch of frames silently (no prints)."""
+        """Process batch of frames silently with TRUE batching."""
         detections = []
+        
+        # Load all frames and stack into batch tensor
+        batch_tensors = []
+        original_sizes = []
+        valid_indices = []
         
         for frame_path, frame_idx in zip(frame_paths, frame_indices):
             try:
-                # Load and preprocess frame
                 search_tensor, original_size = self.model.preprocess_image(frame_path, is_template=False)
-                search_tensor = search_tensor.unsqueeze(0).to(self.device)
-                
-                # Forward pass
-                with torch.no_grad():
-                    obj_map, bbox_map = self.model.model(templates, search_tensor)
-                    
-                    # Decode predictions
-                    frame_detections = self.model.model.decode_predictions(
-                        obj_map, bbox_map,
-                        score_threshold=0.05,  # Very low threshold
-                        top_k=10  # Get multiple candidates
-                    )[0]
-                
-                # Filter and select best detection
-                best_detection = None
-                best_score = 0.0
-                
-                for det in frame_detections:
-                    if det['score'] > best_score and det['score'] >= self.confidence_threshold:
-                        best_score = det['score']
-                        best_detection = det
-                
-                # If we have a valid detection, scale and add
-                if best_detection is not None:
-                    # Scale bbox back to original size
-                    scale_x = original_size[1] / self.model.search_size[0]
-                    scale_y = original_size[0] / self.model.search_size[1]
-                    
-                    bbox = best_detection['bbox']
-                    scaled_bbox = [
-                        bbox[0] * scale_x,
-                        bbox[1] * scale_y,
-                        bbox[2] * scale_x,
-                        bbox[3] * scale_y
-                    ]
-                    
-                    # Clip to image bounds
-                    h, w = original_size
-                    x1 = max(0, min(w-1, int(scaled_bbox[0])))
-                    y1 = max(0, min(h-1, int(scaled_bbox[1])))
-                    x2 = max(x1+1, min(w, int(scaled_bbox[2])))
-                    y2 = max(y1+1, min(h, int(scaled_bbox[3])))
-                    
-                    detections.append({
-                        "frame": int(frame_idx),
-                        "x1": x1,
-                        "y1": y1,
-                        "x2": x2,
-                        "y2": y2,
-                        "confidence": float(best_score)
-                    })
-                
-            except Exception:
-                # Silent failure - skip frame
+                batch_tensors.append(search_tensor)
+                original_sizes.append(original_size)
+                valid_indices.append(frame_idx)
+            except:
                 continue
+        
+        if not batch_tensors:
+            return detections
+        
+        # Stack into batch and run inference once
+        batch_search = torch.stack(batch_tensors).to(self.device)
+        
+        with torch.no_grad():
+            obj_map, bbox_map = self.model.model(templates, batch_search)
+            
+            # Decode all predictions in batch
+            batch_detections = self.model.model.decode_predictions(
+                obj_map, bbox_map,
+                score_threshold=0.05,
+                top_k=10
+            )
+        
+        # Process each frame result
+        for i, (frame_detections, frame_idx, original_size) in enumerate(zip(batch_detections, valid_indices, original_sizes)):
+                
+            # Filter and select best detection for this frame
+            best_detection = None
+            best_score = 0.0
+            
+            for det in frame_detections:
+                if det['score'] > best_score and det['score'] >= self.confidence_threshold:
+                    best_score = det['score']
+                    best_detection = det
+            
+            # If we have a valid detection, scale and add
+            if best_detection is not None:
+                # Scale bbox back to original size
+                scale_x = original_size[1] / self.model.search_size[0]
+                scale_y = original_size[0] / self.model.search_size[1]
+                
+                bbox = best_detection['bbox']
+                scaled_bbox = [
+                    bbox[0] * scale_x,
+                    bbox[1] * scale_y,
+                    bbox[2] * scale_x,
+                    bbox[3] * scale_y
+                ]
+                
+                # Clip to image bounds
+                h, w = original_size
+                x1 = max(0, min(w-1, int(scaled_bbox[0])))
+                y1 = max(0, min(h-1, int(scaled_bbox[1])))
+                x2 = max(x1+1, min(w, int(scaled_bbox[2])))
+                y2 = max(y1+1, min(h, int(scaled_bbox[3])))
+                
+                detections.append({
+                    "frame": int(frame_idx),
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "confidence": float(best_score)
+                })
         
         return detections
     
@@ -241,8 +253,8 @@ def main():
     CHECKPOINT_PATH = "drive/MyDrive/ZALO2025/last_10e.pth"
     SAMPLES_DIR = "public_test/samples"  
     OUTPUT_PATH = "submission_output.json"
-    CONFIDENCE_THRESHOLD = 0.1
-    BATCH_SIZE = 32  # Process multiple frames at once
+    CONFIDENCE_THRESHOLD = 0.2
+    BATCH_SIZE = 64  # Process multiple frames at once
     
     print("=== Optimized GPU Inference ===")
     print(f"Checkpoint: {CHECKPOINT_PATH}")
