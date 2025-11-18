@@ -297,7 +297,12 @@ def main():
     # Configuration
     CHECKPOINT_PATH = "drive/MyDrive/ZALO2025/best_weights_fp32.pth"
     SAMPLES_DIR = "public_test/samples"
-    OUTPUT_PATH = "submission_output.json"
+    
+    # Generate output filename with timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    OUTPUT_PATH = f"submission_output_{timestamp}.json"
+    
     CONFIDENCE_THRESHOLD = 0.4
     USE_FP16 = False 
     
