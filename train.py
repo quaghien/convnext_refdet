@@ -1278,7 +1278,7 @@ if __name__ == "__main__":
         
         # Training
         'batch_size': 16,
-        'epochs': 40,
+        'epochs': 20,
         'lr': 1e-5,
         'weight_decay': 1e-4,
         'grad_clip': 1.0,
@@ -1294,7 +1294,7 @@ if __name__ == "__main__":
         'save_interval': 10,
         
         # Checkpoint
-        'checkpoint_path': 'drive/MyDrive/ZALO2025/best_32.pth',  # path to checkpoint to load, or None for training from scratch
+        'checkpoint_path': 'drive/MyDrive/ZALO2025/best_weights.pth',  # path to checkpoint to load, or None for training from scratch
     }
     
     train(config)
