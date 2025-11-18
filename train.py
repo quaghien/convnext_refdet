@@ -69,43 +69,60 @@ def load_checkpoint(checkpoint_path, model):
     return info
 
 
-def save_checkpoint_with_cleanup(checkpoint, checkpoint_dir, epoch, is_best=False):
+def save_weights_with_cleanup(model, checkpoint_dir, epoch, is_best=False, save_interval=1):
     """
-    Save checkpoint with automatic cleanup of previous last checkpoints.
+    Save weights only with automatic cleanup and save_interval support.
     
     Args:
-        checkpoint: checkpoint dict to save
+        model: model instance for weights saving
         checkpoint_dir: directory to save checkpoints
         epoch: current epoch number
         is_best: whether this is the best model so far
+        save_interval: save checkpoint every N epochs
     
     Returns:
-        tuple: (checkpoint_path, best_path if is_best else None)
+        tuple: (weights_path if saved else None, best_path if is_best else None)
     """
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save regular checkpoint with last_Ne naming
-    checkpoint_name = f'last_{epoch}e.pth'
-    checkpoint_path = checkpoint_dir / checkpoint_name
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Saved checkpoint: {checkpoint_path}")
-    
-    # Clean up previous last checkpoint (epoch-1)
-    if epoch > 1:
-        prev_checkpoint_name = f'last_{epoch-1}e.pth'
-        prev_checkpoint_path = checkpoint_dir / prev_checkpoint_name
-        if prev_checkpoint_path.exists():
-            prev_checkpoint_path.unlink()
-            print(f"Removed previous checkpoint: {prev_checkpoint_path}")
-    
+    weights_path = None
     best_path = None
-    if is_best:
-        best_path = checkpoint_dir / 'best.pth'
-        torch.save(checkpoint, best_path)
-        print(f"Saved best model: {best_path}")
     
-    return checkpoint_path, best_path
+    # Save regular checkpoint only every save_interval epochs
+    if epoch % save_interval == 0:
+        weights_name = f'weights_{epoch}e.pth'
+        weights_path = checkpoint_dir / weights_name
+        
+        # Remove if exists before saving
+        if weights_path.exists():
+            weights_path.unlink()
+            print(f"Removed existing weights: {weights_path}")
+        
+        torch.save(model.state_dict(), weights_path)
+        print(f"Saved weights: {weights_path}")
+        
+        # Clean up previous checkpoint (epoch - save_interval)
+        if epoch > save_interval:
+            prev_weights_name = f'weights_{epoch - save_interval}e.pth'
+            prev_weights_path = checkpoint_dir / prev_weights_name
+            if prev_weights_path.exists():
+                prev_weights_path.unlink()
+                print(f"Removed previous weights: {prev_weights_path}")
+    
+    # Always save best model (regardless of save_interval)
+    if is_best:
+        best_path = checkpoint_dir / 'best_weights.pth'
+        
+        # Remove if exists before saving
+        if best_path.exists():
+            best_path.unlink()
+            print(f"Removed existing best weights: {best_path}")
+        
+        torch.save(model.state_dict(), best_path)
+        print(f"Saved best weights: {best_path}")
+    
+    return weights_path, best_path
 
 
 def find_latest_checkpoint(checkpoint_dir):
@@ -202,12 +219,14 @@ class FocalLoss(nn.Module):
     FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
     
     where p_t is the model's estimated probability for the class.
+    FP16-safe version: computes in float32 and clamps pt to avoid underflow.
     """
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean', eps=1e-4):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
+        self.eps = eps  # FP16-safe epsilon
     
     def forward(self, inputs, targets):
         """
@@ -217,25 +236,34 @@ class FocalLoss(nn.Module):
         Returns:
             loss: scalar
         """
+        # Always compute loss in float32 to avoid FP16 underflow
+        dtype_orig = inputs.dtype
+        inputs = inputs.float()
+        targets = targets.float()
+        
         # Compute probability
         p = torch.sigmoid(inputs)
         
         # Compute p_t: p for positive class, (1-p) for negative class
         pt = p * targets + (1 - p) * (1 - targets)
         
+        # Clamp pt to avoid log(0) which causes -inf in FP16
+        pt = pt.clamp(min=self.eps, max=1.0 - self.eps)
+        
         # Compute alpha_t: alpha for positive, (1-alpha) for negative
         alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
         
         # Focal loss formula: -alpha_t * (1-pt)^gamma * log(pt)
         focal_term = (1 - pt) ** self.gamma
-        loss = -alpha_t * focal_term * torch.log(pt + 1e-7)
+        loss = -alpha_t * focal_term * torch.log(pt)
         
         if self.reduction == 'mean':
-            return loss.mean()
+            loss = loss.mean()
         elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            return loss
+            loss = loss.sum()
+        
+        # Return in original dtype (usually float16) but with stable values
+        return loss.to(dtype_orig)
 
 
 class IoULoss(nn.Module):
@@ -829,6 +857,16 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, conf
             obj_map, bbox_map = model(templates, search)
             loss, loss_dict = criterion(obj_map, bbox_map, targets, stride=model.stride)
         
+        # Check for NaN/inf loss (FP16 safety guard)
+        if not torch.isfinite(loss):
+            print(f"[WARN] Non-finite loss at epoch {epoch}, batch {batch_idx}: "
+                  f"loss={loss.item():.4f}, obj={loss_dict['loss_obj']:.4f}, "
+                  f"bbox={loss_dict['loss_bbox']:.4f}, num_pos={loss_dict['num_pos']}")
+            optimizer.zero_grad(set_to_none=True)
+            if scaler is not None:
+                scaler.update()  # Skip this step
+            continue
+        
         # Backward with mixed precision
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -1164,27 +1202,18 @@ def train(config):
                 'lr': optimizer.param_groups[0]['lr']
             })
         
-        # Save checkpoint every epoch (last_Ne.pth) and best model
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'train_stats': train_stats,
-            'val_stats': val_stats,
-            'config': config,
-            'best_val_loss': best_val_loss
-        }
-        
-        # Check if this is the best model
+        # Check if this is the best model  
         is_best = val_stats['loss'] < best_val_loss
         if is_best:
             best_val_loss = val_stats['loss']
         
-        # Save with cleanup (removes previous last checkpoint)
-        save_checkpoint_with_cleanup(
-            checkpoint, 
+        # Save weights only with cleanup and save_interval
+        save_weights_with_cleanup(
+            model,
             config['checkpoint_dir'], 
             epoch, 
-            is_best=is_best
+            is_best=is_best,
+            save_interval=config.get('save_interval', 1)
         )
     
     print("\nTraining completed!")
@@ -1229,12 +1258,12 @@ if __name__ == "__main__":
         # Logging
         'use_wandb': False,
         'project_name': 'convnext-refdet',
-        'checkpoint_dir': 'drive/MyDrive/ZALO2025/best.pth',
+        'checkpoint_dir': 'drive/MyDrive/ZALO2025',
         # 'checkpoint_dir': 'checkpoints_refdet',
-        'save_interval': 5,
+        'save_interval': 10,
         
         # Checkpoint
-        'checkpoint_path': None,  # path to checkpoint to load, or None for training from scratch
+        'checkpoint_path': 'drive/MyDrive/ZALO2025/best_32.pth',  # path to checkpoint to load, or None for training from scratch
     }
     
     train(config)

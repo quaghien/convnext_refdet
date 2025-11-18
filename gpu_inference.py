@@ -28,9 +28,10 @@ from model import build_convnext_refdet
 class SingleFrameGPUInference:
     """Single-frame GPU inference with proper numpy handling."""
     
-    def __init__(self, checkpoint_path, device='cuda', confidence_threshold=0.4):
+    def __init__(self, checkpoint_path, device='cuda', confidence_threshold=0.4, use_fp16=True):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.confidence_threshold = confidence_threshold
+        self.use_fp16 = use_fp16
         
         print("Loading model...")
         
@@ -48,6 +49,14 @@ class SingleFrameGPUInference:
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model = self.model.to(self.device)
+        
+        # Convert to FP16 if enabled
+        if self.use_fp16 and self.device.type == 'cuda':
+            self.model = self.model.half()
+            print(f"Model loaded on {self.device} with FP16")
+        else:
+            print(f"Model loaded on {self.device} with FP32")
+            
         self.model.eval()
         
         # Transforms
@@ -62,8 +71,6 @@ class SingleFrameGPUInference:
             A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ToTensorV2()
         ])
-        
-        print(f"Model loaded on {self.device}")
     
     def preprocess_numpy_frame(self, frame_bgr):
         """Preprocess numpy frame (BGR from OpenCV) to tensor."""
@@ -105,6 +112,8 @@ class SingleFrameGPUInference:
         templates_batched = []
         for template_tensor in templates:
             template_batch = template_tensor.unsqueeze(0).to(self.device)
+            if self.use_fp16 and self.device.type == 'cuda':
+                template_batch = template_batch.half()
             templates_batched.append(template_batch)
         
         return templates_batched
@@ -115,9 +124,17 @@ class SingleFrameGPUInference:
         tensor, orig_size = self.preprocess_numpy_frame(frame_bgr)
         tensor = tensor.unsqueeze(0).to(self.device)  # Add batch dim
         
+        if self.use_fp16 and self.device.type == 'cuda':
+            tensor = tensor.half()
+        
         with torch.no_grad():
-            # Forward pass
-            obj_map, bbox_map = self.model(templates, tensor)
+            if self.use_fp16 and self.device.type == 'cuda':
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    # Forward pass
+                    obj_map, bbox_map = self.model(templates, tensor)
+            else:
+                # Forward pass
+                obj_map, bbox_map = self.model(templates, tensor)
             
             # Decode predictions
             predictions = self.model.decode_predictions(
@@ -265,18 +282,21 @@ def main():
     CHECKPOINT_PATH = "drive/MyDrive/ZALO2025/best.pth"
     SAMPLES_DIR = "public_test/samples"
     OUTPUT_PATH = "submission_output.json"
-    CONFIDENCE_THRESHOLD = 0.2
+    CONFIDENCE_THRESHOLD = 0.4
+    USE_FP16 = False  # Set to False for FP32
     
     print("=== Single-Frame GPU Inference ===")
     print(f"Checkpoint: {CHECKPOINT_PATH}")
     print(f"Samples: {SAMPLES_DIR}")
     print(f"Confidence: {CONFIDENCE_THRESHOLD}")
+    print(f"Mixed Precision: {'FP16' if USE_FP16 else 'FP32'}")
     
     # Initialize inference
     inference = SingleFrameGPUInference(
         checkpoint_path=CHECKPOINT_PATH,
         device='cuda',
-        confidence_threshold=CONFIDENCE_THRESHOLD
+        confidence_threshold=CONFIDENCE_THRESHOLD,
+        use_fp16=USE_FP16
     )
     
     # Get objects
